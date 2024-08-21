@@ -31,6 +31,7 @@ class AzureDeploymentService(Service, metaclass=abc.ABCMeta):
     _REQUEST_TOTAL_RETRIES = 10  # Total number retries for each request
     # Delay (seconds) between retries: {backoff factor} * (2 ** ({number of previous retries}))
     _REQUEST_RETRY_BACKOFF_FACTOR = 0.3
+    _REQUEST_RETRY_STATUS_FORCELIST = [503]
 
     # Azure Resources Deployment REST API as described in
     # https://docs.microsoft.com/en-us/rest/api/resources/deployments
@@ -86,6 +87,9 @@ class AzureDeploymentService(Service, metaclass=abc.ABCMeta):
         self._backoff_factor = float(
             self.config.get("requestBackoffFactor", self._REQUEST_RETRY_BACKOFF_FACTOR)
         )
+        self._status_forcelist = self.config.get(
+            "requestRetryStatusForcelist", self._REQUEST_RETRY_STATUS_FORCELIST
+        )
 
         self._deploy_template = {}
         self._deploy_params = {}
@@ -136,11 +140,12 @@ class AzureDeploymentService(Service, metaclass=abc.ABCMeta):
         """
         total_retries = params.get("requestTotalRetries", self._total_retries)
         backoff_factor = params.get("requestBackoffFactor", self._backoff_factor)
+        status_forcelist = params.get("requestRetryStatusForceList", self._status_forcelist)
         session = requests.Session()
-        session.mount(
-            "https://",
-            HTTPAdapter(max_retries=Retry(total=total_retries, backoff_factor=backoff_factor)),
+        retry = Retry(
+            total=total_retries, backoff_factor=backoff_factor, status_forcelist=status_forcelist
         )
+        session.mount("https://", HTTPAdapter(max_retries=retry))
         session.headers.update(self._get_headers())
         return session
 
@@ -244,11 +249,11 @@ class AzureDeploymentService(Service, metaclass=abc.ABCMeta):
             return (Status.FAILED, {})
 
         if _LOG.isEnabledFor(logging.DEBUG):
-            _LOG.debug(
-                "Response: %s\n%s",
-                response,
-                json.dumps(response.json(), indent=2) if response.content else "",
-            )
+            try:
+                pp_content = json.dumps(response.json(), indent=2)
+            except requests.exceptions.JSONDecodeError:
+                pp_content = response.text
+            _LOG.debug("Response: %s\n%s", response, pp_content)
 
         if response.status_code == 200:
             output = response.json()
@@ -484,11 +489,11 @@ class AzureDeploymentService(Service, metaclass=abc.ABCMeta):
         )
 
         if _LOG.isEnabledFor(logging.DEBUG):
-            _LOG.debug(
-                "Response: %s\n%s",
-                response,
-                json.dumps(response.json(), indent=2) if response.content else "",
-            )
+            try:
+                pp_content = json.dumps(response.json(), indent=2)
+            except requests.exceptions.JSONDecodeError:
+                pp_content = response.text
+            _LOG.debug("Response: %s\n%s", response, pp_content)
         else:
             _LOG.info("Response: %s", response)
 
